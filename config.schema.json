@@ -1,5 +1,5 @@
 {
-  "pluginAlias": "ExampleHomebridgePlugin",
+  "pluginAlias": "Planika",
   "pluginType": "platform",
   "singular": true,
   "schema": {
@@ -9,7 +9,13 @@
         "title": "Name",
         "type": "string",
         "required": true,
-        "default": "Example Dynamic Platform"
+        "default": "Fireplace"
+      },
+      "IP": {
+        "title": "IP",
+        "type": "string",
+        "required": true,
+        "default": "192.168.1.100"
       }
     }
   }

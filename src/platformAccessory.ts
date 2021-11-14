@@ -1,141 +1,164 @@
 import { Service, PlatformAccessory, CharacteristicValue } from 'homebridge';
 
-import { ExampleHomebridgePlatform } from './platform';
+import { PlanikaHomebridgePlatform } from './platform';
 
-/**
- * Platform Accessory
- * An instance of this class is created for each accessory your platform registers
- * Each accessory may expose multiple services of different service types.
- */
-export class ExamplePlatformAccessory {
-  private service: Service;
+import axios from 'axios';
+import parser from 'fast-xml-parser';
+import url from 'url';
 
-  /**
-   * These are just used to create a working example
-   * You should implement your own code to track the state of your accessory
-   */
-  private exampleStates = {
+export class PlanikaPlatformAccessory {
+  private fireplaceService: Service;
+  private fuelLevelService: Service;
+
+  private state = {
     On: false,
-    Brightness: 100,
+    FlameSize: 2, // 1 to 6
+    FuelLevel: 0, // 0 to 4
+    StatusCode: 1,
   };
 
+  private planikaStates = new Array(256);
   constructor(
-    private readonly platform: ExampleHomebridgePlatform,
+    private readonly platform: PlanikaHomebridgePlatform,
     private readonly accessory: PlatformAccessory,
   ) {
-
-    // set accessory information
     this.accessory.getService(this.platform.Service.AccessoryInformation)!
-      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Default-Manufacturer')
-      .setCharacteristic(this.platform.Characteristic.Model, 'Default-Model')
-      .setCharacteristic(this.platform.Characteristic.SerialNumber, 'Default-Serial');
+      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Planika')
+      .setCharacteristic(this.platform.Characteristic.Model, 'Fireplace')
+      .setCharacteristic(this.platform.Characteristic.SerialNumber, '?? N/A');
 
-    // get the LightBulb service if it exists, otherwise create a new LightBulb service
-    // you can create multiple services for each accessory
-    this.service = this.accessory.getService(this.platform.Service.Lightbulb) || this.accessory.addService(this.platform.Service.Lightbulb);
+    this.fireplaceService = this.accessory.getService(this.platform.Service.Lightbulb) ||
+      this.accessory.addService(this.platform.Service.Lightbulb);
 
-    // set the service name, this is what is displayed as the default name on the Home app
-    // in this example we are using the name we stored in the `accessory.context` in the `discoverDevices` method.
-    this.service.setCharacteristic(this.platform.Characteristic.Name, accessory.context.device.exampleDisplayName);
+    this.fireplaceService.setCharacteristic(this.platform.Characteristic.Name, accessory.context.device.name);
 
-    // each service must implement at-minimum the "required characteristics" for the given service type
-    // see https://developers.homebridge.io/#/service/Lightbulb
+    this.fireplaceService.getCharacteristic(this.platform.Characteristic.On)
+      .onSet(this.setOn.bind(this))
+      .onGet(this.getOn.bind(this));
 
-    // register handlers for the On/Off Characteristic
-    this.service.getCharacteristic(this.platform.Characteristic.On)
-      .onSet(this.setOn.bind(this))                // SET - bind to the `setOn` method below
-      .onGet(this.getOn.bind(this));               // GET - bind to the `getOn` method below
+    this.fireplaceService.getCharacteristic(this.platform.Characteristic.Brightness)
+      .onSet(this.setFlameSize.bind(this))
+      .onGet(this.getFlameSize.bind(this));
 
-    // register handlers for the Brightness Characteristic
-    this.service.getCharacteristic(this.platform.Characteristic.Brightness)
-      .onSet(this.setBrightness.bind(this));       // SET - bind to the 'setBrightness` method below
+    this.fuelLevelService = this.accessory.getService(this.platform.Service.Battery) ||
+      this.accessory.addService(this.platform.Service.Battery);
 
-    /**
-     * Creating multiple services of the same type.
-     *
-     * To avoid "Cannot add a Service with the same UUID another Service without also defining a unique 'subtype' property." error,
-     * when creating multiple services of the same type, you need to use the following syntax to specify a name and subtype id:
-     * this.accessory.getService('NAME') || this.accessory.addService(this.platform.Service.Lightbulb, 'NAME', 'USER_DEFINED_SUBTYPE_ID');
-     *
-     * The USER_DEFINED_SUBTYPE must be unique to the platform accessory (if you platform exposes multiple accessories, each accessory
-     * can use the same sub type id.)
-     */
+    this.fuelLevelService.getCharacteristic(this.platform.Characteristic.StatusLowBattery)
+      .onGet(this.getStatusLowBattery.bind(this));
 
-    // Example: add two "motion sensor" services to the accessory
-    const motionSensorOneService = this.accessory.getService('Motion Sensor One Name') ||
-      this.accessory.addService(this.platform.Service.MotionSensor, 'Motion Sensor One Name', 'YourUniqueIdentifier-1');
+    this.fuelLevelService.getCharacteristic(this.platform.Characteristic.BatteryLevel)
+      .onGet(this.getBatteryLevel.bind(this));
 
-    const motionSensorTwoService = this.accessory.getService('Motion Sensor Two Name') ||
-      this.accessory.addService(this.platform.Service.MotionSensor, 'Motion Sensor Two Name', 'YourUniqueIdentifier-2');
+    this.fuelLevelService.getCharacteristic(this.platform.Characteristic.ChargingState)
+      .onGet(this.getChargingState.bind(this));
 
-    /**
-     * Updating characteristics values asynchronously.
-     *
-     * Example showing how to update the state of a Characteristic asynchronously instead
-     * of using the `on('get')` handlers.
-     * Here we change update the motion sensor trigger states on and off every 10 seconds
-     * the `updateCharacteristic` method.
-     *
-     */
-    let motionDetected = false;
     setInterval(() => {
-      // EXAMPLE - inverse the trigger
-      motionDetected = !motionDetected;
-
-      // push the new value to HomeKit
-      motionSensorOneService.updateCharacteristic(this.platform.Characteristic.MotionDetected, motionDetected);
-      motionSensorTwoService.updateCharacteristic(this.platform.Characteristic.MotionDetected, !motionDetected);
-
-      this.platform.log.debug('Triggering motionSensorOneService:', motionDetected);
-      this.platform.log.debug('Triggering motionSensorTwoService:', !motionDetected);
-    }, 10000);
+      this.RefreshState();
+    }, 5000);
   }
 
-  /**
-   * Handle "SET" requests from HomeKit
-   * These are sent when the user changes the state of an accessory, for example, turning on a Light bulb.
-   */
+  private RefreshState() {
+    const logger = this.platform.log;
+
+    axios.get('http://' + this.platform.config.IP + '/state.xml',
+      { responseType: 'document' },
+    ).then((response) => {
+      const r = parser.parse(response.data);
+
+      // Planika flame sizes go from 2 to 12 with a step of 2
+      this.state.FlameSize = r.params.param.find(p => p.name === 'flame').value / 2;
+      this.state.FuelLevel = r.params.param.find(p => p.name === 'fuel').value;
+      this.state.StatusCode = r.params.param.find(p => p.name === 'tryb').value;
+
+      logger.debug('Current state: ' + this.state.StatusCode.toString() + ', flame size: ' +
+        this.state.FlameSize.toString() + ', fuel level: ' + this.state.FuelLevel.toString());
+
+      switch (this.state.StatusCode) {
+        case 2:   //PLEASE WAIT
+        case 3:   //COOLING THE DEVICE
+        case 7:   //COOLING HIT
+        case 8:   //COOLING TILTED DEVICE
+        case 9:   //COOLING THE DEVICE
+        case 15:  //COOLING THE DEVICE
+        case 19:  //COOLING - CO2
+        case 20:  //WORKING
+          this.state.On = true;
+          break;
+
+        default:
+          this.state.On = false;
+          break;
+      }
+
+      this.fireplaceService.updateCharacteristic(this.platform.Characteristic.Brightness, this.state.FlameSize * (100/6));
+      this.fireplaceService.updateCharacteristic(this.platform.Characteristic.On, this.state.On);
+
+      this.fuelLevelService.updateCharacteristic(this.platform.Characteristic.BatteryLevel, this.state.FuelLevel * (100/4));
+    });
+  }
+
   async setOn(value: CharacteristicValue) {
-    // implement your own code to turn your device on/off
-    this.exampleStates.On = value as boolean;
+    this.platform.log.info('Setting On to ->', value);
 
-    this.platform.log.debug('Set Characteristic On ->', value);
+    if (value as boolean === true) {
+      if (this.state.StatusCode === 20 ) { // 20 - WORKING
+        return true;
+      }
+
+      const params = new url.URLSearchParams({'__SL_P_UBT' : 'ButtonStart'});
+      axios.post('http://' + this.platform.config.IP + '/No_content', params.toString());
+    } else {
+      const params = new url.URLSearchParams({'__SL_P_UBT' : 'ButtonStop'});
+      axios.post('http://' + this.platform.config.IP + '/No_content', params.toString());
+    }
+
+    return value;
   }
 
-  /**
-   * Handle the "GET" requests from HomeKit
-   * These are sent when HomeKit wants to know the current state of the accessory, for example, checking if a Light bulb is on.
-   *
-   * GET requests should return as fast as possbile. A long delay here will result in
-   * HomeKit being unresponsive and a bad user experience in general.
-   *
-   * If your device takes time to respond you should update the status of your device
-   * asynchronously instead using the `updateCharacteristic` method instead.
-
-   * @example
-   * this.service.updateCharacteristic(this.platform.Characteristic.On, true)
-   */
   async getOn(): Promise<CharacteristicValue> {
-    // implement your own code to check if the device is on
-    const isOn = this.exampleStates.On;
-
-    this.platform.log.debug('Get Characteristic On ->', isOn);
-
-    // if you need to return an error to show the device as "Not Responding" in the Home app:
-    // throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
-
-    return isOn;
+    return this.state.StatusCode === 20; // 20 - WORKING
   }
 
-  /**
-   * Handle "SET" requests from HomeKit
-   * These are sent when the user changes the state of an accessory, for example, changing the Brightness
-   */
-  async setBrightness(value: CharacteristicValue) {
-    // implement your own code to set the brightness
-    this.exampleStates.Brightness = value as number;
+  async setFlameSize(value: CharacteristicValue) {
+    const targetFlame = Math.floor(value as number / (100/6)) + 1;
+    let noOfSteps = targetFlame - this.state.FlameSize;
 
-    this.platform.log.debug('Set Characteristic Brightness -> ', value);
+    this.platform.log.info('Set Flame size to ' + value + '%, ' + ', from ' + this.state.FlameSize +
+      ' to ' + targetFlame + ' in Planika levels.');
+
+    let operation = 'ButtonPlus';
+
+    if (noOfSteps<0) {
+      operation = 'ButtonMinus';
+      noOfSteps = noOfSteps * -1;
+    }
+
+    for (let i = 0 ; i<noOfSteps ; i++) {
+      const params = new url.URLSearchParams({'__SL_P_UBT' : operation});
+
+      axios.post('http://' + this.platform.config['IP'] + '/No_content', params.toString());
+    }
+
+    this.RefreshState();
   }
 
+  async getFlameSize(): Promise<CharacteristicValue> {
+    return this.state.FlameSize * (100/6);
+  }
+
+  async getStatusLowBattery(): Promise<CharacteristicValue> {
+    if (this.state.FuelLevel === 0) {
+      return this.platform.Characteristic.StatusLowBattery.BATTERY_LEVEL_LOW;
+    } else {
+      return this.platform.Characteristic.StatusLowBattery.BATTERY_LEVEL_NORMAL;
+    }
+  }
+
+  async getBatteryLevel(): Promise<CharacteristicValue> {
+    return this.state.FuelLevel * (100/4);
+  }
+
+  async getChargingState(): Promise<CharacteristicValue> {
+    return (this.state.StatusCode === 11 || this.state.StatusCode === 12); // 11 - AUTOREFUEL, 12 - REFUELING
+  }
 }
