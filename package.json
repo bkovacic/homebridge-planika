@@ -2,7 +2,7 @@
   "private": false,
   "displayName": "Planika Fireplace",
   "name": "homebridge-planika",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Control you Planika Fireplace through Homebridge.",
   "license": "Apache-2.0",
   "repository": {
