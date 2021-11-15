@@ -116,7 +116,8 @@ export class PlanikaPlatformAccessory {
   }
 
   async getOn(): Promise<CharacteristicValue> {
-    return this.state.StatusCode === 20; // 20 - WORKING
+    this.RefreshState();
+    return this.state.On;
   }
 
   async setFlameSize(value: CharacteristicValue) {
